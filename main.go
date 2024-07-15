@@ -13,6 +13,10 @@ import (
 	"github.com/joho/godotenv"
 )
 
+const (
+	checkTime = time.Hour
+)
+
 func main() {
 	err := godotenv.Load()
 	if err != nil {
@@ -21,8 +25,8 @@ func main() {
 
 	log.Println("starting...")
 
-	owner := solana.MustPublicKeyFromBase58("DvxJjNdTVPSknYDVPQbWZyZZ5uqNRLEiYDHoW1U7FbhC")
-	account := solana.MustPublicKeyFromBase58("DJ9aKByfVrNzW1r7MTKCBVED9izCVat9gENXLQn4fq9x")
+	owner := solana.MustPublicKeyFromBase58("AD65fgYti96iSSzSPaNazV9Bs29m7JbNomGjG4Cp5WFS")
+	account, _, _ := solana.FindAssociatedTokenAddress(owner, solana.SolMint)
 
 	rpcClient := rpc.New(os.Getenv("RPC_URL"))
 
@@ -56,29 +60,41 @@ func main() {
 		before = signatures[len(signatures)-1].Signature
 
 		for _, signature := range signatures {
-			if time.Since(signature.BlockTime.Time()) > time.Minute*5 {
-				v := uint64(0)
-				txData, err := rpcClient.GetTransaction(
-					context.TODO(),
-					signature.Signature,
-					&rpc.GetTransactionOpts{
-						MaxSupportedTransactionVersion: &v,
-					},
-				)
-				if err != nil {
-					panic(err)
-				}
+			if time.Since(signature.BlockTime.Time()) < checkTime {
+				continue
+			}
+			v := uint64(0)
+			slot, err := rpcClient.GetBlockWithOpts(
+				context.TODO(),
+				signature.Slot,
+				&rpc.GetBlockOpts{
+					TransactionDetails:             rpc.TransactionDetailsFull,
+					MaxSupportedTransactionVersion: &v,
+				},
+			)
+			if err != nil {
+				panic(err)
+			}
 
-				var postBalance uint64
-				for _, balance := range txData.Meta.PostTokenBalances {
+			var postBalance uint64
+			var lastTx rpc.TransactionWithMeta
+			for _, tx := range slot.Transactions {
+				for _, balance := range tx.Meta.PostTokenBalances {
 					if balance.Owner.Equals(owner) && balance.Mint.Equals(solana.SolMint) {
 						postBalance, _ = strconv.ParseUint(balance.UiTokenAmount.Amount, 10, 64)
+						lastTx = tx
 					}
 				}
-
-				log.Printf("last hour: %v SOL", math.Round(float64(balance-postBalance)/float64(solana.LAMPORTS_PER_SOL)*100)/100)
-				return
 			}
+			log.Println(postBalance, lastTx.MustGetTransaction().Signatures[0])
+			log.Println(signature.Signature.String())
+			profit := math.Round(float64(balance-postBalance)/float64(solana.LAMPORTS_PER_SOL)*100) / 100
+
+			profitPerHour := profit / checkTime.Hours()
+
+			log.Printf("last %s: %v SOL", checkTime.String(), profit)
+			log.Printf("%v SOL/h", profitPerHour)
+			return
 		}
 	}
 }
